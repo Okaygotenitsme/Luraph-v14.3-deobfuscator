@@ -17,7 +17,7 @@ def normalize_number(tok):
 
 def find_state_var(source):
     counts = defaultdict(int)
-    for m in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)==0[xXbB0-9]', source):
+    for m in re.finditer(r'\b([A-Za-z_][A-Za-z0-9_]*)(==|~=)(0[xXbB][0-9a-fA-F_]+|[0-9][0-9_]*)\b', source):
         counts[m.group(1)] += 1
     if not counts:
         return None
