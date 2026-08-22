@@ -66,7 +66,6 @@ def main():
     print(f'\ntotal distinct opcode values referenced: {len(all_opcode_values)}')
     print(all_opcode_values)
 
-    # dump ordered list of (position, op, val) for manual cross-referencing
     out_path = 'vm_opcode_comparisons.txt'
     with open(out_path, 'w') as f:
         for pos, op, val in comparisons:
