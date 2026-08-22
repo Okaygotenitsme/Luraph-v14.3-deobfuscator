@@ -1,10 +1,6 @@
 import re
 
 KEYWORDS_OPEN = {'function', 'if', 'for', 'while', 'do'}
-# NOTE: 'do' as standalone opener only happens as bare `do ... end` block;
-# but 'do' also follows for/while and does NOT open an extra 'end'.
-# We handle that by only counting 'do' as an opener when it is a *standalone*
-# do-block, detected by NOT having just consumed a for/while header.
 KEYWORDS_CLOSE = {'end'}
 KEYWORDS_REPEAT = {'repeat'}
 KEYWORDS_UNTIL = {'until'}
@@ -55,15 +51,6 @@ def find_matching_end(src, open_pos):
         if text in ('function', 'if', 'for', 'while'):
             depth += 1
         elif text == 'do':
-            # 'do' after for/while doesn't add depth (already counted at for/while).
-            # A standalone 'do...end' block: we approximate by NOT tracking this
-            # distinction perfectly, but since for/while already incremented depth
-            # for their header, and their 'do' is just a keyword with no 'end' of
-            # its own beyond the for/while's, we must NOT increment again here.
-            # A bare 'do' block does need its own 'end', but bare 'do' blocks are
-            # rare and can be added by incrementing when a 'do' is NOT immediately
-            # preceded contextually by for/while -- too complex for regex level;
-            # skip (acceptable approximation for VM dispatcher extraction).
             continue
         elif text == 'end':
             depth -= 1
