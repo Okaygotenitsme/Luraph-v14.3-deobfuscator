@@ -177,19 +177,19 @@ class Deserializer:
 
     def _read_jump_table(self):
         z = {}
-        n = 1
-        while True:
+        n = 0
+        count = self.qp()
+        for _ in range(count):
             w = self.qp()
-            op_val = self.qp()
+            op = w // 2
             n += 1
             if w % 2 == 0:
-                z[n] = op_val - op_val % 2
+                z[n] = op - op % 1
             else:
                 s_val = self.qp()
-                n2 = self.qp()
-                for o in range(op_val - op_val % 2, n2 + 1):
+                end_idx = self.qp()
+                for o in range(op - op % 1, end_idx + 1):
                     z[o] = s_val
-            break
         return z
 
 
