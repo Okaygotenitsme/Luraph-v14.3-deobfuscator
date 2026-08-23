@@ -143,21 +143,21 @@ class Deserializer:
             elif c_val == TYPE_RAW:
                 o_arr[b] = e_val
             elif c_val == TYPE_PATCH:
-                self.Pp.extend([Q, b, e_val])
+                self.Pp.append((Q, b, e_val))
 
             if y_mod == TYPE_CONST:
                 x[b] = self._resolve(a_val)
             elif y_mod == TYPE_RAW:
                 U[b] = a_val
             elif y_mod == TYPE_PATCH:
-                self.Pp.extend([x, b, a_val])
+                self.Pp.append((x, b, a_val))
 
             if d_val == TYPE_CONST:
                 s[b] = self._resolve(rp_final)
             elif d_val == TYPE_RAW:
                 w_arr[b] = rp_final
             elif d_val == TYPE_PATCH:
-                self.Pp.extend([s, b, rp_final])
+                self.Pp.append((s, b, rp_final))
 
         z = self._read_jump_table()
 
@@ -174,6 +174,14 @@ class Deserializer:
             'nested_x_head': x_head,
         }
         return proto
+
+    def apply_patches(self):
+        applied = 0
+        for target_array, index, const_idx in self.Pp:
+            target_array[index] = self._resolve(const_idx)
+            applied += 1
+        self.Pp = []
+        return applied
 
     def _read_jump_table(self):
         z = {}
@@ -227,17 +235,28 @@ def main():
     print('cursor after r-count header:', ds.cur.pos)
 
     print()
-    print('--- attempting first proto read ---')
-    print(f'cursor before proto: {ds.cur.pos}')
-    try:
-        proto = ds.read_proto()
-        print('numparams:', proto['numparams'])
-        print('opcode count:', len(proto['opcodes']))
-        print('first 40 opcodes:', proto['opcodes'][:40])
-        print('cursor after proto:', ds.cur.pos, 'of', len(data))
-    except Exception as ex:
-        print('failed:', ex)
-        print('cursor at failure:', ds.cur.pos)
+    print('--- reading all top-level protos ---')
+    protos = []
+    for i in range(r_count):
+        pos_before = ds.cur.pos
+        try:
+            proto = ds.read_proto()
+            protos.append(proto)
+            print(i, 'ok insns', len(proto['opcodes']), 'pos', pos_before, '->', ds.cur.pos)
+        except Exception as ex:
+            print(i, 'failed at', pos_before, ':', ex)
+            break
+
+    applied = ds.apply_patches()
+    print()
+    print('patches applied:', applied)
+
+    if protos:
+        first = protos[0]
+        unresolved = sum(1 for v in first['operand_Q'] if isinstance(v, tuple) and v[0] == 'unresolved_const')
+        unresolved += sum(1 for v in first['operand_x'] if isinstance(v, tuple) and v[0] == 'unresolved_const')
+        unresolved += sum(1 for v in first['operand_s'] if isinstance(v, tuple) and v[0] == 'unresolved_const')
+        print('proto0 remaining unresolved operand refs:', unresolved)
 
 
 if __name__ == '__main__':
