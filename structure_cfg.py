@@ -99,6 +99,84 @@ def render_block_body(proto, block, indent, skip_last_jmp=False):
     return lines
 
 
+def find_irreducible_headers(n_blocks, edges, dom, reachable):
+    preds = build_preds(n_blocks, edges)
+    headers = {}
+    for bi, targets in edges.items():
+        if bi not in reachable:
+            continue
+        for kind, tb in targets:
+            if tb not in reachable:
+                continue
+            if tb in dom.get(bi, set()):
+                continue
+            if len(preds[tb]) <= 1:
+                continue
+            is_real_loop = any(
+                bi in dom.get(p, set()) or tb in dom.get(p, set())
+                for p in preds[tb] if p != bi
+            )
+            if is_real_loop:
+                headers.setdefault(tb, set()).add(bi)
+    return headers
+
+
+def split_node(blocks, edges, preds, node, keep_pred, next_block_id):
+    clone_id = next_block_id
+    blocks.append(dict(blocks[node]))
+    edges[clone_id] = list(edges.get(node, []))
+
+    for p, targets in list(edges.items()):
+        if p == keep_pred:
+            new_targets = []
+            for kind, tb in targets:
+                if tb == node:
+                    new_targets.append((kind, clone_id))
+                else:
+                    new_targets.append((kind, tb))
+            edges[p] = new_targets
+
+    preds[clone_id] = [keep_pred]
+    preds[node] = [p for p in preds[node] if p != keep_pred]
+
+    for kind, tb in edges[clone_id]:
+        preds.setdefault(tb, [])
+        if node in preds[tb] and clone_id not in preds[tb]:
+            preds[tb].append(clone_id)
+
+    return clone_id
+
+
+def apply_limited_node_splitting(blocks, edges, dom, reachable, max_external_preds=2, max_total_splits=60):
+    preds = build_preds(len(blocks), edges)
+    next_id = len(blocks)
+    total_splits = 0
+    rounds = 0
+
+    seen_targets = set()
+    while total_splits < max_total_splits:
+        rounds += 1
+        headers = find_irreducible_headers(len(blocks), edges, dom, reachable)
+        cheap = {h: eps for h, eps in headers.items() if 2 <= len(eps) <= max_external_preds and h not in seen_targets}
+        if not cheap:
+            break
+
+        target, external_preds = next(iter(cheap.items()))
+        seen_targets.add(target)
+        external_preds = sorted(external_preds)
+        for ep in external_preds[1:]:
+            if total_splits >= max_total_splits:
+                break
+            split_node(blocks, edges, preds, target, ep, next_id)
+            next_id += 1
+            total_splits += 1
+
+        n_blocks = len(blocks)
+        dom, reachable = compute_dominators(n_blocks, preds, entry=0)
+
+    return blocks, edges, dom, reachable, rounds, total_splits
+
+
 def linear_order(n_blocks, entry=0):
     return list(range(n_blocks))
 
@@ -179,12 +257,37 @@ def main():
 
     preds = build_preds(n_blocks, edges)
     dom, reachable = compute_dominators(n_blocks, preds, entry=0)
-    loop_headers = find_natural_loop_headers(n_blocks, edges, dom, reachable)
 
-    print(f'blocks: {n_blocks}, reachable: {len(reachable)}')
+    headers = find_irreducible_headers(n_blocks, edges, dom, reachable)
+    next_id = len(blocks)
+    total_splits = 0
+    for h, eps in headers.items():
+        for ep in eps:
+            split_node(blocks, edges, preds, h, ep, next_id)
+            next_id += 1
+            total_splits += 1
+    dom, reachable = compute_dominators(len(blocks), preds, entry=0)
+
+    remaining = find_irreducible_headers(len(blocks), edges, dom, reachable)
+    for h, eps in remaining.items():
+        for ep in eps:
+            split_node(blocks, edges, preds, h, ep, next_id)
+            next_id += 1
+            total_splits += 1
+    dom, reachable = compute_dominators(len(blocks), preds, entry=0)
+
+    print(f'node splitting: {total_splits} nodes cloned, blocks now {len(blocks)}')
+
+    remaining = find_irreducible_headers(len(blocks), edges, dom, reachable)
+    print(f'remaining irreducible headers (left as goto): {len(remaining)}')
+    for h, eps in sorted(remaining.items()):
+        print(f'  B{h} <- external preds {sorted(eps)}')
+
+    loop_headers = find_natural_loop_headers(len(blocks), edges, dom, reachable)
+
     print(f'natural loop headers: {len(loop_headers)}')
 
-    order = linear_order(n_blocks, entry=0)
+    order = linear_order(len(blocks), entry=0)
     out = emit_structured(proto, blocks, edges, loop_headers, order)
 
     text = '\n'.join(out)
