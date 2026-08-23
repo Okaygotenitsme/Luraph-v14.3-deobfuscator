@@ -2,6 +2,11 @@ import struct
 import sys
 
 SP_BIAS = 0xD97D
+OP_BIAS = 0x3C3A
+
+TYPE_CONST = 4
+TYPE_RAW = 3
+TYPE_PATCH = 5
 
 
 class Cursor:
@@ -43,33 +48,152 @@ class Cursor:
         return s
 
 
-def read_constant_pool(cur):
-    raw = cur.uleb128()
-    a = raw - SP_BIAS
-    if a < 0 or a > 200000:
-        raise ValueError(f'implausible constant count {a} (raw={raw}) at pos {cur.pos}')
-    wrap = cur.u8() != 0
-    pool = []
-    for _ in range(a):
-        tag = cur.u8()
-        if tag > 0x15:
-            if tag > 0x22:
-                val = cur.length_prefixed_string()
-                kind = 'string'
+class Deserializer:
+    def __init__(self, data):
+        self.cur = Cursor(data)
+        self.D = None
+        self.wrap = False
+        self.Pp = []
+        self.H = {}
+
+    def qp(self):
+        return self.cur.uleb128()
+
+    def read_constant_pool(self):
+        raw = self.cur.uleb128()
+        a = raw - SP_BIAS
+        if a < 0 or a > 200000:
+            raise ValueError(f'implausible constant count {a} (raw={raw}) at pos {self.cur.pos}')
+        self.wrap = self.cur.u8() != 0
+        pool = []
+        for _ in range(a):
+            tag = self.cur.u8()
+            if tag > 0x15:
+                if tag > 0x22:
+                    val = self.cur.length_prefixed_string()
+                    kind = 'string'
+                else:
+                    val = self.cur.i64()
+                    kind = 'int'
+            elif tag == 0x15:
+                val = self.cur.u8() == 1
+                kind = 'bool'
             else:
-                val = cur.i64()
-                kind = 'int'
-        elif tag == 0x15:
-            val = cur.u8() == 1
-            kind = 'bool'
-        else:
-            val = cur.double()
-            kind = 'number'
-        pool.append((kind, val))
-    return pool, wrap, a
+                val = self.cur.double()
+                kind = 'number'
+            pool.append((kind, val))
+        self.D = pool
+        return pool, self.wrap, a
+
+    def _resolve(self, idx):
+        if idx < len(self.D):
+            return self.D[idx]
+        return ('unresolved_const', idx)
+
+    def read_upvalue_section(self):
+        r_count = self.qp() - 0x2680
+        if r_count < 0 or r_count > 200000:
+            raise ValueError(f'implausible r-count {r_count} at pos {self.cur.pos}')
+        return r_count
+
+    def read_proto(self):
+        numparams = self.qp()
+
+        head_count = self.qp()
+        x_head = [None] * head_count
+        for o in range(head_count):
+            w_id = self.qp()
+            if w_id in self.H:
+                x_head[o] = self.H[w_id]
+            else:
+                entry = (w_id // 4, w_id % 4)
+                self.H[w_id] = entry
+                x_head[o] = entry
+
+        insn_count = self.qp() - OP_BIAS
+
+        op = [None] * insn_count
+        Q = [None] * insn_count
+        x = [None] * insn_count
+        s = [None] * insn_count
+        U = [None] * insn_count
+        o_arr = [None] * insn_count
+        w_arr = [None] * insn_count
+
+        for b in range(insn_count):
+            l_val = self.qp()
+            s_val = self.qp()
+            z_val = self.qp()
+            rp_val = self.qp()
+
+            y_mod = z_val % 8
+            d_val = l_val % 8
+            c_val = rp_val % 8
+            e_val = (rp_val - c_val) // 8
+            a_val = (z_val - y_mod) // 8
+            rp_final = (l_val - d_val) // 8
+
+            o_arr[b] = e_val
+            w_arr[b] = rp_final
+            op[b] = s_val
+            U[b] = a_val
+
+            if c_val == TYPE_CONST:
+                Q[b] = self._resolve(e_val)
+            elif c_val == TYPE_RAW:
+                o_arr[b] = e_val
+            elif c_val == TYPE_PATCH:
+                self.Pp.extend([Q, b, e_val])
+
+            if y_mod == TYPE_CONST:
+                x[b] = self._resolve(a_val)
+            elif y_mod == TYPE_RAW:
+                U[b] = a_val
+            elif y_mod == TYPE_PATCH:
+                self.Pp.extend([x, b, a_val])
+
+            if d_val == TYPE_CONST:
+                s[b] = self._resolve(rp_final)
+            elif d_val == TYPE_RAW:
+                w_arr[b] = rp_final
+            elif d_val == TYPE_PATCH:
+                self.Pp.extend([s, b, rp_final])
+
+        z = self._read_jump_table()
+
+        proto = {
+            'numparams': numparams,
+            'opcodes': op,
+            'operand_Q': Q,
+            'operand_x': x,
+            'operand_s': s,
+            'operand_U': U,
+            'operand_o': o_arr,
+            'operand_w': w_arr,
+            'jump_table': z,
+            'nested_x_head': x_head,
+        }
+        return proto
+
+    def _read_jump_table(self):
+        z = {}
+        n = 1
+        while True:
+            w = self.qp()
+            op_val = self.qp()
+            n += 1
+            if w % 2 == 0:
+                z[n] = op_val - op_val % 2
+            else:
+                s_val = self.qp()
+                n2 = self.qp()
+                for o in range(op_val - op_val % 2, n2 + 1):
+                    z[o] = s_val
+            break
+        return z
 
 
-def dump(pool, limit=None):
+def dump_pool(pool, limit=None):
     for i, (kind, val) in enumerate(pool[:limit] if limit else pool):
         if kind == 'string':
             try:
@@ -88,16 +212,32 @@ def main():
     with open(path, 'rb') as f:
         data = f.read()
 
-    cur = Cursor(data)
-    pool, wrap, count = read_constant_pool(cur)
+    ds = Deserializer(data)
+    pool, wrap, count = ds.read_constant_pool()
 
     print(f'constant count: {count}  wrap-mode: {wrap}')
-    print(f'cursor after const pool: byte {cur.pos} of {len(data)}')
-    print('--- constants ---')
-    dump(pool)
+    print(f'cursor after const pool: byte {ds.cur.pos} of {len(data)}')
+    print('--- constants (first 20) ---')
+    dump_pool(pool, limit=20)
 
-    print('--- next 64 bytes after const pool ---')
-    print(data[cur.pos:cur.pos + 64].hex())
+    print()
+    print('--- upvalue/proto-count section ---')
+    r_count = ds.read_upvalue_section()
+    print('r_count (number of top-level protos):', r_count)
+    print('cursor after r-count header:', ds.cur.pos)
+
+    print()
+    print('--- attempting first proto read ---')
+    print(f'cursor before proto: {ds.cur.pos}')
+    try:
+        proto = ds.read_proto()
+        print('numparams:', proto['numparams'])
+        print('opcode count:', len(proto['opcodes']))
+        print('first 40 opcodes:', proto['opcodes'][:40])
+        print('cursor after proto:', ds.cur.pos, 'of', len(data))
+    except Exception as ex:
+        print('failed:', ex)
+        print('cursor at failure:', ds.cur.pos)
 
 
 if __name__ == '__main__':
