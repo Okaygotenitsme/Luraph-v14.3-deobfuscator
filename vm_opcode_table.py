@@ -120,6 +120,7 @@ OPCODES = {
     118: 'NEWTABLE',
     119: 'JMP',
     120: 'MOD_IMM',
+    121: 'NOP',
 }
 
 FIELD_MAP = {
