@@ -29,10 +29,10 @@ def fmt_operand(label, val):
     return f'{label}=r{val}'
 
 
-def render_instruction(idx, opcode, Q, x, s, U, o, w):
+def render_instruction(idx, opcode, G, l, Hp, E, S, lp):
     mnem = OPCODES.get(opcode, f'UNKNOWN_{opcode}')
     parts = []
-    for label, val in (('Q', Q), ('x', x), ('s', s), ('U', U), ('o', o), ('w', w)):
+    for label, val in (('G', G), ('l', l), ('Hp', Hp), ('E', E), ('S', S), ('lp', lp)):
         f = fmt_operand(label, val)
         if f is not None:
             parts.append(f)
@@ -46,12 +46,12 @@ def render_proto(proto, index=0):
         line = render_instruction(
             i,
             proto['opcodes'][i],
-            proto['operand_Q'][i],
-            proto['operand_x'][i],
-            proto['operand_s'][i],
-            proto['operand_U'][i],
-            proto['operand_o'][i],
-            proto['operand_w'][i],
+            proto['operand_G'][i],
+            proto['operand_l'][i],
+            proto['operand_Hp'][i],
+            proto['operand_E'][i],
+            proto['operand_S'][i],
+            proto['operand_lp'][i],
         )
         lines.append(line)
     return '\n'.join(lines)

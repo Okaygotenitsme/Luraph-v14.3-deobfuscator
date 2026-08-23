@@ -164,12 +164,12 @@ class Deserializer:
         proto = {
             'numparams': numparams,
             'opcodes': op,
-            'operand_Q': Q,
-            'operand_x': x,
-            'operand_s': s,
-            'operand_U': U,
-            'operand_o': o_arr,
-            'operand_w': w_arr,
+            'operand_G': Q,
+            'operand_l': x,
+            'operand_Hp': s,
+            'operand_E': U,
+            'operand_S': o_arr,
+            'operand_lp': w_arr,
             'jump_table': z,
             'nested_x_head': x_head,
         }
