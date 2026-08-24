@@ -5,6 +5,7 @@ from proto_deserializer import Deserializer
 from cfg_builder import build_basic_blocks, build_cfg
 from vm_opcode_table import OPCODES
 from condition_table import render_condition
+from expr_table import render_expr
 
 
 def build_preds(n_blocks, edges):
@@ -95,8 +96,12 @@ def render_block_body(proto, block, indent, skip_last_jmp=False):
             end -= 1
     for i in range(block['start'], end):
         op = proto['opcodes'][i]
-        mnem = OPCODES.get(op, f'UNKNOWN_{op}')
-        lines.append(f'{pad}{mnem}  -- insn {i}')
+        expr = render_expr(op, proto, i)
+        if expr is not None:
+            lines.append(f'{pad}{expr}')
+        else:
+            mnem = OPCODES.get(op, f'UNKNOWN_{op}')
+            lines.append(f'{pad}{mnem}  -- insn {i}')
     return lines
 
 
