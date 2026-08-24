@@ -171,7 +171,7 @@ class Deserializer:
             'operand_S': o_arr,
             'operand_lp': w_arr,
             'jump_table': z,
-            'nested_x_head': x_head,
+            'dead_head_data': x_head,
         }
         return proto
 
