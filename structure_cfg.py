@@ -4,6 +4,7 @@ import json
 from proto_deserializer import Deserializer
 from cfg_builder import build_basic_blocks, build_cfg
 from vm_opcode_table import OPCODES
+from condition_table import render_condition
 
 
 def build_preds(n_blocks, edges):
@@ -276,7 +277,10 @@ def emit_structured(proto, blocks, edges, loop_headers, order):
         if diamond:
             true_b, false_b = diamond
             next_bi = order[pos + 1] if pos + 1 < len(order) else None
-            out.append(f'    if <cond from B{bi}> then')
+            cond_idx = blocks[bi]['end'] - 1
+            cond_op = proto['opcodes'][cond_idx]
+            cond_text = render_condition(cond_op, proto, cond_idx)
+            out.append(f'    if {cond_text} then')
             if true_b != next_bi:
                 out.append(f'        goto B{true_b}')
             else:
@@ -375,7 +379,10 @@ def emit_nested(proto, blocks, edges, dom, reachable, bi, indent, out, visited, 
         if diamond:
             true_b, false_b = diamond
             merge = find_merge_point(edges, true_b, false_b)
-            out.append('    ' * indent + f'if <cond from B{bi}> then')
+            cond_idx = blocks[bi]['end'] - 1
+            cond_op = proto['opcodes'][cond_idx]
+            cond_text = render_condition(cond_op, proto, cond_idx)
+            out.append('    ' * indent + f'if {cond_text} then')
             emit_nested(proto, blocks, edges, dom, reachable, true_b, indent + 1, out, visited, stop_at=merge, loop_headers_active=loop_headers_active)
             out.append('    ' * indent + 'else')
             emit_nested(proto, blocks, edges, dom, reachable, false_b, indent + 1, out, visited, stop_at=merge, loop_headers_active=loop_headers_active)
