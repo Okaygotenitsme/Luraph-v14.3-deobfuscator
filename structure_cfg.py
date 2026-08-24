@@ -99,6 +99,23 @@ def render_block_body(proto, block, indent, skip_last_jmp=False):
     return lines
 
 
+def is_reachable_from(edges, start, target, reachable_cache=None):
+    if reachable_cache is not None and start in reachable_cache:
+        return target in reachable_cache[start]
+    seen = set()
+    stack = [start]
+    while stack:
+        node = stack.pop()
+        if node == target:
+            return True
+        if node in seen:
+            continue
+        seen.add(node)
+        for kind, tb in edges.get(node, []):
+            stack.append(tb)
+    return False
+
+
 def find_irreducible_headers(n_blocks, edges, dom, reachable):
     preds = build_preds(n_blocks, edges)
     headers = {}
@@ -109,6 +126,8 @@ def find_irreducible_headers(n_blocks, edges, dom, reachable):
             if tb not in reachable:
                 continue
             if tb in dom.get(bi, set()):
+                continue
+            if not is_reachable_from(edges, tb, bi):
                 continue
             if len(preds[tb]) <= 1:
                 continue
@@ -177,6 +196,44 @@ def apply_limited_node_splitting(blocks, edges, dom, reachable, max_external_pre
     return blocks, edges, dom, reachable, rounds, total_splits
 
 
+def find_true_loop_header(node, preds, dom):
+    candidates = [node] + [p for p in preds[node]]
+    for c in candidates:
+        others = [p for p in preds[node] if p != c]
+        if all(c in dom.get(p, set()) or p == c for p in preds[node]):
+            return c
+    return node
+
+
+def apply_targeted_splitting(blocks, edges, dom, reachable, max_rounds=30):
+    preds = build_preds(len(blocks), edges)
+    next_id = len(blocks)
+    total_splits = 0
+
+    for round_i in range(max_rounds):
+        headers = find_irreducible_headers(len(blocks), edges, dom, reachable)
+        if not headers:
+            return blocks, edges, dom, reachable, total_splits, True
+
+        progressed = False
+        for node, external_preds in headers.items():
+            true_header = find_true_loop_header(node, preds, dom)
+            if true_header == node:
+                for ep in external_preds:
+                    split_node(blocks, edges, preds, node, ep, next_id)
+                    next_id += 1
+                    total_splits += 1
+                progressed = True
+                break
+
+        if not progressed:
+            return blocks, edges, dom, reachable, total_splits, False
+
+        dom, reachable = compute_dominators(len(blocks), preds, entry=0)
+
+    return blocks, edges, dom, reachable, total_splits, False
+
+
 def linear_order(n_blocks, entry=0):
     return list(range(n_blocks))
 
@@ -237,6 +294,123 @@ def emit_structured(proto, blocks, edges, loop_headers, order):
     return out
 
 
+def find_loop_body(header, edges, dom, reachable):
+    preds = build_preds(max(edges.keys(), default=0) + 1, edges)
+    body = {header}
+    stack = [p for p in preds[header] if header in dom.get(p, set())]
+    while stack:
+        node = stack.pop()
+        if node in body:
+            continue
+        body.add(node)
+        for p in preds[node]:
+            if p not in body and header in dom.get(p, set()):
+                stack.append(p)
+    return body
+
+
+def find_loop_exits(body, edges):
+    exits = set()
+    for node in body:
+        for kind, tb in edges.get(node, []):
+            if tb not in body:
+                exits.add(tb)
+    return exits
+
+
+def emit_nested(proto, blocks, edges, dom, reachable, bi, indent, out, visited, stop_at=None, loop_headers_active=None):
+    if loop_headers_active is None:
+        loop_headers_active = set()
+
+    while bi is not None and bi != stop_at:
+        is_loop_header = any(
+            tb == bi and bi in dom.get(src, set())
+            for src, targets in edges.items()
+            for kind, tb in targets
+        )
+
+        if is_loop_header and bi not in loop_headers_active:
+            loop_headers_active = loop_headers_active | {bi}
+            body = find_loop_body(bi, edges, dom, reachable)
+            exits = find_loop_exits(body, edges)
+            out.append('    ' * indent + f'while true do  -- B{bi}')
+            body_visited = set(visited)
+            emit_nested(proto, blocks, edges, dom, reachable, bi, indent + 1, out, body_visited, stop_at=None, loop_headers_active=loop_headers_active)
+            visited.add(bi)
+            visited |= body_visited
+            out.append('    ' * indent + 'end')
+            if len(exits) == 1:
+                bi = next(iter(exits))
+                continue
+            elif len(exits) == 0:
+                return None
+            else:
+                out.append('    ' * indent + f'-- multiple loop exits {sorted(exits)}, taking first')
+                bi = sorted(exits)[0]
+                continue
+
+        if bi in visited:
+            out.append('    ' * indent + f'-- already emitted B{bi} (merge point)')
+            return None
+        visited.add(bi)
+
+        out.extend(render_block_body(proto, blocks[bi], indent, skip_last_jmp=True))
+
+        targets = edges.get(bi, [])
+        if not targets:
+            out.append('    ' * indent + 'return')
+            return None
+
+        if len(targets) == 1:
+            tb = targets[0][1]
+            if tb in loop_headers_active:
+                bi = None
+                continue
+            bi = tb
+            if bi == stop_at:
+                return None
+            continue
+
+        diamond = find_diamond(bi, edges)
+        if diamond:
+            true_b, false_b = diamond
+            merge = find_merge_point(edges, true_b, false_b)
+            out.append('    ' * indent + f'if <cond from B{bi}> then')
+            emit_nested(proto, blocks, edges, dom, reachable, true_b, indent + 1, out, visited, stop_at=merge, loop_headers_active=loop_headers_active)
+            out.append('    ' * indent + 'else')
+            emit_nested(proto, blocks, edges, dom, reachable, false_b, indent + 1, out, visited, stop_at=merge, loop_headers_active=loop_headers_active)
+            out.append('    ' * indent + 'end')
+            bi = merge
+            continue
+
+        out.append('    ' * indent + f'-- unresolved multi-branch at B{bi}: {targets}')
+        return None
+    return bi
+
+
+def find_merge_point(edges, a, b):
+    def reachable_from(start):
+        seen = set()
+        stack = [start]
+        order = []
+        while stack:
+            node = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            order.append(node)
+            for kind, tb in edges.get(node, []):
+                stack.append(tb)
+        return seen
+
+    ra = reachable_from(a)
+    rb = reachable_from(b)
+    common = ra & rb
+    if not common:
+        return None
+    return min(common)
+
+
 def main():
     path = sys.argv[1] if len(sys.argv) > 1 else 'decoded.bin'
     proto_index = int(sys.argv[2]) if len(sys.argv) > 2 else 0
@@ -288,18 +462,30 @@ def main():
     print(f'natural loop headers: {len(loop_headers)}')
 
     order = linear_order(len(blocks), entry=0)
-    out = emit_structured(proto, blocks, edges, loop_headers, order)
+    goto_out = emit_structured(proto, blocks, edges, loop_headers, order)
+    goto_text = '\n'.join(goto_out)
+    goto_count = goto_text.count('goto ')
+    label_count = goto_text.count('::B')
+    print(f'[goto mode] total lines: {len(goto_out)}, goto statements: {goto_count}, labels: {label_count}')
 
-    text = '\n'.join(out)
-    goto_count = text.count('goto ')
-    label_count = text.count('::B')
-    print(f'total lines: {len(out)}, goto statements: {goto_count}, labels: {label_count}')
+    with open('vm_structured_goto.txt', 'w') as f:
+        f.write(goto_text)
+    print('wrote vm_structured_goto.txt')
 
-    with open('vm_structured.txt', 'w') as f:
-        f.write(text)
-    print('wrote vm_structured.txt')
+    nested_visited = set()
+    nested_out = []
+    emit_nested(proto, blocks, edges, dom, reachable, 0, 1, nested_out, nested_visited)
+    nested_text = '\n'.join(nested_out)
+    nested_goto_count = nested_text.count('goto ')
+    print(f'[nested mode] total lines: {len(nested_out)}, remaining goto statements: {nested_goto_count}')
+
+    with open('vm_structured_nested.txt', 'w') as f:
+        f.write(nested_text)
+    print('wrote vm_structured_nested.txt')
+
     print()
-    print(text[:2000])
+    print('--- nested preview ---')
+    print(nested_text[:2000])
 
 
 if __name__ == '__main__':
