@@ -1,188 +1,216 @@
-import struct
 import sys
 
-POS_SLOT_TABLE_EXTRA = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14]
+E = [1] + [0] * 33
+for _i in range(1, 34):
+    E[_i] = E[_i - 1] * 2
 
-STATE_TRANSITION_LIT = [0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 4, 5]
 
-
-class RangeDecoder:
+class Ctx:
     def __init__(self, data):
-        self.data = data
-        self.pos = 0
-        self.code = 0
-        self.range = 0xFFFFFFFF
-        for _ in range(5):
-            self.code = (self.code * 256 + self._read_byte()) & 0xFFFFFFFFFFFFFFFF
+        self.L = data
+        self.i = 0
+        self.s = len(data)
 
-    def _read_byte(self):
-        b = self.data[self.pos]
-        self.pos += 1
-        return b
-
-    def decode_direct_bits(self, num):
-        result = 0
-        for _ in range(num):
-            self.range //= 2
-            result <<= 1
-            if self.code >= self.range:
-                self.code -= self.range
-                result |= 1
-            if self.range <= 0x00FFFFFF:
-                self.range *= 256
-                self.code = self.code * 256 + self._read_byte()
-        return result
-
-    def decode_bit(self, probs, idx):
-        prob = probs[idx]
-        bound = (self.range // 2048) * prob
-        if self.code < bound:
-            self.range = bound
-            probs[idx] = prob + ((2048 - prob) >> 5)
-            bit = 0
-        else:
-            self.range -= bound
-            self.code -= bound
-            probs[idx] = prob - (prob >> 5)
-            bit = 1
-        if self.range <= 0x00FFFFFF:
-            self.range *= 256
-            self.code = self.code * 256 + self._read_byte()
-        return bit
-
-    def decode_bit_tree(self, probs, num_bits):
-        m = 1
-        for _ in range(num_bits):
-            m = (m << 1) | self.decode_bit(probs, m)
-        return m - (1 << num_bits)
-
-    def decode_bit_tree_reverse(self, probs, offset, num_bits):
-        m = 1
-        result = 0
-        for i in range(num_bits):
-            bit = self.decode_bit(probs, offset + m)
-            m = (m << 1) | bit
-            result |= bit << i
-        return result
+    def C(self):
+        self.i += 1
+        return self.L[self.i - 1]
 
 
-def make_probs(n):
+def make_h(n):
     return [1024] * n
 
 
-def decode_len(rd, bundle, pos_state):
-    if rd.decode_bit(bundle, 0) == 0:
-        return rd.decode_bit_tree(bundle[2][pos_state], 3)
-    if rd.decode_bit(bundle, 1) == 0:
-        return 8 + rd.decode_bit_tree(bundle[3][pos_state], 3)
-    return 16 + rd.decode_bit_tree(bundle[4], 8)
+def make_z(rows, cols):
+    return [[1024] * cols for _ in range(rows)]
 
 
-def make_len_bundle():
-    return [1024, 1024, [make_probs(8)], [make_probs(8)], make_probs(256)]
+def make_bundle():
+    return [1024, 1024, make_z(1, 8), make_z(1, 8), make_h(256)]
 
 
-def lzma_decompress(compressed, out_size_hint=None):
-    rd = RangeDecoder(compressed)
+def run(data, max_out=None):
+    ctx = Ctx(data)
 
-    lit_probs = make_probs(8 * 0x300)
-    is_match = [make_probs(1) for _ in range(12)]
-    is_rep = make_probs(12)
-    is_rep_g0 = make_probs(12)
-    is_rep_g1 = make_probs(12)
-    is_rep_g2 = make_probs(12)
-    is_rep0_long = [make_probs(1) for _ in range(12)]
+    F_ = 0
+    for _ in range(5):
+        F_ = F_ * 256 + ctx.C()
+    G_ = 0xFFFFFFFF
 
-    pos_slot_probs = [make_probs(64) for _ in range(4)]
-    spec_pos_probs = make_probs(115)
-    align_probs = make_probs(16)
+    def U(N, Q):
+        nonlocal F_, G_
+        o = N[Q]
+        I = G_ // 2048
+        T_ = I * o
+        if F_ < T_:
+            G_ = T_
+            I2 = (2048 - o) // 32
+            o = o + I2
+            M = 0
+        else:
+            G_ = G_ - T_
+            F_ = F_ - T_
+            I2 = o // 32
+            o = o - I2
+            M = 1
+        N[Q] = o
+        if G_ <= 0x00FFFFFF:
+            G_ = G_ * 256
+            F_ = F_ * 256 + ctx.C()
+        return M
 
-    len_bundle = make_len_bundle()
-    rep_len_bundle = make_len_bundle()
+    def H(Q):
+        nonlocal F_, G_
+        o = 0
+        for _ in range(Q):
+            G_ = G_ // 2
+            o = o * 2
+            if not (F_ < G_):
+                F_ = F_ - G_
+                o = o + 1
+            if G_ <= 0x00FFFFFF:
+                G_ = G_ * 256
+                F_ = F_ * 256 + ctx.C()
+        return o
 
-    out = bytearray()
-    state = 0
-    rep0 = rep1 = rep2 = rep3 = 0
+    def S(Q, G, o):
+        I = 1
+        for _ in range(G):
+            I = I * 2 + U(Q, I)
+        return I - o
 
-    def peek_byte(dist):
-        idx = len(out) - dist - 1
-        if idx < 0:
-            return 0
-        return out[idx]
+    def Y(F, Q, I):
+        G = 0
+        N = 1
+        for o in range(I):
+            bit = U(F, Q + N)
+            N = N * 2 + bit
+            G = G + bit * E[o]
+        return G
 
-    max_out = out_size_hint if out_size_hint else (len(compressed) * 50)
+    def m(G, I):
+        o = 1
+        for Q in range(7, -1, -1):
+            N = (I // E[Q]) % 2
+            bit = U(G, o + (N * 256) + 256)
+            o = o * 2 + bit
+            if N != bit:
+                while o < 0x100:
+                    o = o * 2 + U(G, o)
+                break
+        return o % 256
 
-    while rd.pos <= len(compressed) and len(out) < max_out:
-        pos_state = len(out) & 0
+    def T(Q, I):
+        if U(Q, 0) == 0:
+            return S(Q[2][I], 3, 8)
+        elif U(Q, 1) == 0:
+            return 8 + S(Q[3][I], 3, 8)
+        return S(Q[4], 8, 256) + 16
 
-        if rd.decode_bit(is_match[state], 0) == 0:
-            prev_byte = peek_byte(0)
-            lit_state = 0
-            probs_offset = 0x300 * lit_state
-            if state < 7:
-                symbol = 1
-                for _ in range(8):
-                    bit = rd.decode_bit(lit_probs, probs_offset + symbol)
-                    symbol = (symbol << 1) | bit
-                out.append(symbol & 0xFF)
+    o_pos = 0
+    w = bytearray()
+    M_state = 0
+    C_table = [0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 4, 5]
+
+    d = make_z(8, 0x300)
+    Fm = make_z(12, 1)
+    Nrep = make_h(12)
+    Krep0 = make_h(12)
+    Wrep1 = make_h(12)
+    Vrep2 = make_h(12)
+    Ishort = make_z(12, 1)
+    A_slot = make_z(4, 64)
+    R_spec = make_h(115)
+    g_align = make_h(16)
+    t_bundle = make_bundle()
+    L_bundle = make_bundle()
+    p_dist = 0
+    f_rep1 = 0
+    G_rep2 = 0
+    D_rep3 = 0
+
+    limit = max_out if max_out else len(data) * 60
+    iterations = 0
+    max_iterations = limit * 4 + 1000
+
+    while ctx.i <= ctx.s:
+        iterations += 1
+        if iterations > max_iterations:
+            break
+        if len(w) > limit:
+            break
+
+        z_pos = o_pos % 1
+
+        if U(Fm[M_state], z_pos) == 0:
+            prev = w[o_pos - 1] if o_pos >= 1 else 0
+            s_ctx = prev // E[5]
+            Fd = d[s_ctx]
+            o_pos = o_pos + 1
+            if M_state < 7:
+                val = S(Fd, 8, 256)
             else:
-                match_byte = peek_byte(rep0)
-                symbol = 1
-                for _ in range(8):
-                    match_bit = (match_byte >> 7) & 1
-                    match_byte = (match_byte << 1) & 0xFF
-                    bit = rd.decode_bit(lit_probs, probs_offset + ((1 + match_bit) << 8) + symbol)
-                    symbol = (symbol << 1) | bit
-                out.append(symbol & 0xFF)
-            state = STATE_TRANSITION_LIT[state]
+                match_byte = w[o_pos - 1 - p_dist - 1] if (o_pos - 1 - p_dist - 1) >= 0 else 0
+                val = m(Fd, match_byte)
+            if len(w) < o_pos:
+                w.append(val & 0xFF)
+            else:
+                w[o_pos - 1] = val & 0xFF
+            M_state = C_table[M_state]
             continue
 
-        if rd.decode_bit(is_rep, state) != 0:
-            if len(out) == 0:
-                return bytes(out)
-            if rd.decode_bit(is_rep_g0, state) == 0:
-                if rd.decode_bit(is_rep0_long[state], 0) == 0:
-                    state = 9 if state < 7 else 11
-                    length = 1
-                    out.append(peek_byte(rep0))
-                    continue
+        F_len = None
+        if U(Nrep, M_state) != 0:
+            if U(Krep0, M_state) == 0:
+                if U(Ishort[M_state], z_pos) == 0:
+                    M_state = 9 if M_state < 7 else 11
+                    F_len = 1
             else:
-                if rd.decode_bit(is_rep_g1, state) == 0:
-                    dist = rep1
+                if U(Wrep1, M_state) == 0:
+                    I_dist = f_rep1
                 else:
-                    if rd.decode_bit(is_rep_g2, state) == 0:
-                        dist = rep2
+                    if U(Vrep2, M_state) == 0:
+                        I_dist = G_rep2
                     else:
-                        dist = rep3
-                        rep3 = rep2
-                    rep2 = rep1
-                rep1 = rep0
-                rep0 = dist
-            length = 2 + decode_len(rd, rep_len_bundle, 0)
-            state = 8 if state < 7 else 11
+                        I_dist = D_rep3
+                        D_rep3 = G_rep2
+                    G_rep2 = f_rep1
+                f_rep1 = p_dist
+                p_dist = I_dist
+
+            if F_len is None:
+                M_state = 8 if M_state < 7 else 11
+                F_len = 2 + T(L_bundle, z_pos)
         else:
-            rep3, rep2, rep1 = rep2, rep1, rep0
-            length = 2 + decode_len(rd, len_bundle, 0)
-            len_state = min(length - 2, 3)
-            pos_slot = rd.decode_bit_tree(pos_slot_probs[len_state], 6)
-            if pos_slot < 4:
-                rep0 = pos_slot
-            else:
-                num_direct_bits = (pos_slot >> 1) - 1
-                rep0 = (2 | (pos_slot & 1)) << num_direct_bits
-                if pos_slot < 14:
-                    rep0 += rd.decode_bit_tree_reverse(spec_pos_probs, rep0 - pos_slot - 1, num_direct_bits)
+            D_rep3 = G_rep2
+            G_rep2 = f_rep1
+            f_rep1 = p_dist
+            F_len = 2 + T(t_bundle, z_pos)
+            I_len = F_len - 2
+            if I_len >= 4:
+                I_len = 3
+            p_dist = S(A_slot[I_len], 6, 64)
+            if p_dist >= 4:
+                s_val = p_dist
+                I_shift = s_val // 2 - 1
+                p_dist = (2 + s_val % 2) * E[I_shift]
+                if s_val < 14:
+                    p_dist = p_dist + Y(R_spec, p_dist - s_val - 1, I_shift)
                 else:
-                    rep0 += rd.decode_direct_bits(num_direct_bits - 4) << 4
-                    rep0 += rd.decode_bit_tree_reverse(align_probs, 0, 4)
-            if rep0 == 0xFFFFFFFF:
-                break
-            state = 7 if state < 7 else 10
+                    p_dist = p_dist + (H(I_shift - 4) * 16) + Y(g_align, 0, 4)
+                    if p_dist == 0xFFFFFFFF:
+                        return bytes(w), F_len == 2
+            M_state = 7 if M_state < 7 else 10
+            if p_dist >= o_pos:
+                return bytes(w), False
 
-        for _ in range(length):
-            out.append(peek_byte(rep0))
+        s_end = o_pos + F_len
+        for _ in range(o_pos, s_end):
+            src_idx = len(w) - p_dist - 1
+            val = w[src_idx] if 0 <= src_idx < len(w) else 0
+            w.append(val)
+        o_pos = s_end
 
-    return bytes(out)
+    return bytes(w), False
 
 
 def main():
@@ -192,13 +220,12 @@ def main():
     with open(path, 'rb') as f:
         data = f.read()
 
-    result = lzma_decompress(data)
-    print(f'decompressed {len(data)} -> {len(result)} bytes')
+    result, flag = run(data)
+    print(f'input {len(data)} bytes -> output {len(result)} bytes, terminated_flag={flag}')
+    print('first 80 bytes:', result[:80])
 
     with open(out_path, 'wb') as f:
         f.write(result)
-
-    print('first 100 bytes:', result[:100])
 
 
 if __name__ == '__main__':
