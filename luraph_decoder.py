@@ -50,9 +50,27 @@ def lua_unescape(s):
 
 def extract_blob(source_text):
     m = re.search(r'x\("((?:[^"\\]|\\.)*)",\s*0[xX]5\)', source_text)
-    if not m:
-        raise ValueError("blob literal not found")
-    return lua_unescape(m.group(1))
+    if m:
+        return lua_unescape(m.group(1))
+
+    lph_start = source_text.find('"LPH')
+    if lph_start != -1:
+        pos = lph_start + 1
+        n = len(source_text)
+        while pos < n:
+            ch = source_text[pos]
+            if ch == chr(92):
+                pos += 2
+                continue
+            if ch == '"':
+                candidate = source_text[lph_start + 1:pos]
+                return lua_unescape(candidate)
+            pos += 1
+
+    for m in re.finditer(r'\[(=*)\[(LPH.*?)\]\1\]', source_text, re.DOTALL):
+        return m.group(2).encode('latin-1', errors='ignore')
+
+    raise ValueError("blob literal not found")
 
 
 def decode_b85_chunk(chunk):
