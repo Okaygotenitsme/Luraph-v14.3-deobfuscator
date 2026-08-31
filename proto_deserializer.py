@@ -22,6 +22,7 @@ class Cursor:
     def uleb128(self):
         result = 0
         shift = 0
+        iterations = 0
         while True:
             b = self.data[self.pos]
             self.pos += 1
@@ -29,6 +30,9 @@ class Cursor:
             if b & 0x80 == 0:
                 break
             shift += 7
+            iterations += 1
+            if iterations > 10:
+                raise ValueError('uleb128 exceeded max length, likely misaligned read')
         return result
 
     def double(self):
@@ -49,19 +53,21 @@ class Cursor:
 
 
 class Deserializer:
-    def __init__(self, data):
+    def __init__(self, data, sp_bias=SP_BIAS, op_bias=OP_BIAS):
         self.cur = Cursor(data)
         self.D = None
         self.wrap = False
         self.Pp = []
         self.H = {}
+        self.sp_bias = sp_bias
+        self.op_bias = op_bias
 
     def qp(self):
         return self.cur.uleb128()
 
     def read_constant_pool(self):
         raw = self.cur.uleb128()
-        a = raw - SP_BIAS
+        a = raw - self.sp_bias
         if a < 0 or a > 200000:
             raise ValueError(f'implausible constant count {a} (raw={raw}) at pos {self.cur.pos}')
         self.wrap = self.cur.u8() != 0
@@ -91,7 +97,7 @@ class Deserializer:
         return ('unresolved_const', idx)
 
     def read_upvalue_section(self):
-        r_count = self.qp() - 0x2680
+        r_count = self.qp() - self.op_bias
         if r_count < 0 or r_count > 200000:
             raise ValueError(f'implausible r-count {r_count} at pos {self.cur.pos}')
         return r_count
@@ -100,6 +106,8 @@ class Deserializer:
         numparams = self.qp()
 
         head_count = self.qp()
+        if head_count > 500000:
+            raise ValueError(f'implausible head_count {head_count}')
         x_head = [None] * head_count
         for o in range(head_count):
             w_id = self.qp()
@@ -110,7 +118,9 @@ class Deserializer:
                 self.H[w_id] = entry
                 x_head[o] = entry
 
-        insn_count = self.qp() - OP_BIAS
+        insn_count = self.qp() - self.op_bias
+        if insn_count < 0 or insn_count > 500000:
+            raise ValueError(f'implausible insn_count {insn_count}')
 
         op = [None] * insn_count
         Q = [None] * insn_count
